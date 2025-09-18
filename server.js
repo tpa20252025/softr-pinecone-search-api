@@ -3,7 +3,7 @@ import cors from "cors";
 
 const app = express();
 app.use(express.json());
-// tighten to your Bubble/Softr origins later
+// tighten this to your Bubble/Softr origin later
 app.use(cors({ origin: true }));
 
 const {
@@ -14,100 +14,104 @@ const {
 } = process.env;
 
 const MODEL = "text-embedding-3-small"; // 1536-dim cosine
+const DAY_MS = 24 * 60 * 60 * 1000;
 
-function trimHost(u){ return (u || "").replace(/\/+$/,""); }
+const trimHost = (u = "") => u.replace(/\/+$/, "");
 
-async function embed(text){
+async function embed(text) {
   const r = await fetch("https://api.openai.com/v1/embeddings", {
     method: "POST",
     headers: {
       Authorization: `Bearer ${OPENAI_API_KEY}`,
-      "Content-Type": "application/json"
+      "Content-Type": "application/json",
     },
-    body: JSON.stringify({ model: MODEL, input: text })
+    body: JSON.stringify({ model: MODEL, input: text }),
   });
   const j = await r.json();
   if (!r.ok) throw new Error(`OpenAI: ${r.status} ${JSON.stringify(j)}`);
   return j.data[0].embedding;
 }
 
-app.get("/healthz", (_req,res) => res.json({ ok:true }));
+app.get("/healthz", (_req, res) => res.json({ ok: true }));
 
 // GET /search?q=...&topK=30&type=essay|podcast|video|podcast,video&days=30
-app.get("/search", async (req,res) => {
+app.get("/search", async (req, res) => {
   try {
-    const q = (req.query.q || "").toString().trim();
-    const topK = Math.min(parseInt(req.query.topK || "10", 10), 50);
+    const q = String(req.query.q ?? "").trim();
     if (!q) return res.status(400).json({ error: "Missing q" });
 
-    // ---- type parsing ----
-    // Accept "essay", "podcast", "video", or CSV like "podcast,video".
-    const rawType = (req.query.type || "").toString().trim();
-    let typeTokens = rawType
+    const topK =
+      Math.min(parseInt(String(req.query.topK ?? "10"), 10) || 10, 50);
+
+    // ---- TYPE PARSING ----
+    // Accept "essay", "podcast", "video" or CSV like "podcast,video"
+    const rawType = String(req.query.type ?? "").trim().toLowerCase();
+    let tokens = rawType
       .replace(/\//g, ",")
       .split(",")
-      .map(s => s.trim().toLowerCase())
+      .map((s) => s.trim())
       .filter(Boolean);
 
-    // 'all' disables type filter
-    if (typeTokens.includes("all")) typeTokens = [];
+    if (tokens.includes("all")) tokens = [];
 
-    // Build allowed labels for Pinecone's final_type
-    // (exact stored labels: "Essay", "Podcast", "Video", "Podcast, Video")
+    // Build allowed labels for your stored values
+    // final_type ∈ {"Essay","Podcast","Video","Podcast, Video"}
     const allowedTypeLabels = new Set();
-    for (const t of typeTokens) {
-      if (t === "essay") {
+    for (const t of tokens) {
+      if (t === "essay" || t === "essays") {
         allowedTypeLabels.add("Essay");
-      } else if (t === "podcast") {
+      } else if (t === "podcast" || t === "podcasts") {
         allowedTypeLabels.add("Podcast");
-        allowedTypeLabels.add("Podcast, Video");
-      } else if (t === "video") {
+        allowedTypeLabels.add("Podcast, Video"); // include combo
+      } else if (t === "video" || t === "videos") {
         allowedTypeLabels.add("Video");
-        allowedTypeLabels.add("Podcast, Video");
+        allowedTypeLabels.add("Podcast, Video"); // include combo
       }
     }
-    const finalTypeFilterValues =
+    const finalTypeValues =
       allowedTypeLabels.size ? Array.from(allowedTypeLabels) : null;
 
-    // ---- days parsing ----
-    const daysParam = parseInt((req.query.days || "").toString(), 10);
-    const days = Number.isFinite(daysParam) && daysParam > 0 ? daysParam : null;
+    // ---- DAYS PARSING ----
+    const daysNum = parseInt(String(req.query.days ?? ""), 10);
+    const days =
+      Number.isFinite(daysNum) && daysNum > 0 ? daysNum : null;
     const cutoffYMD = days
-      ? new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString().slice(0, 10)
+      ? new Date(Date.now() - days * DAY_MS).toISOString().slice(0, 10)
       : null;
 
+    // ---- EMBED & QUERY ----
     const vector = await embed(q);
 
-    // ---- build Pinecone filter ----
     const filter = {};
-    if (finalTypeFilterValues) {
-      filter["final_type"] = { $in: finalTypeFilterValues };
-    }
-    if (cutoffYMD) {
-      // your field is date_of_publication in YYYY-MM-DD
-      filter["date_of_publication"] = { $gte: cutoffYMD };
-    }
+    if (finalTypeValues) filter.final_type = { $in: finalTypeValues };
+    if (cutoffYMD)
+      filter.date_of_publication = { $gte: cutoffYMD };
 
     const body = {
       vector,
       topK,
       includeMetadata: true,
       ...(PINECONE_NAMESPACE && { namespace: PINECONE_NAMESPACE }),
-      ...(Object.keys(filter).length ? { filter } : {})
+      ...(Object.keys(filter).length ? { filter } : {}),
     };
 
     const r = await fetch(`${trimHost(PINECONE_HOST)}/query`, {
       method: "POST",
-      headers: { "Api-Key": PINECONE_API_KEY, "Content-Type": "application/json" },
-      body: JSON.stringify(body)
+      headers: {
+        "Api-Key": PINECONE_API_KEY,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(body),
     });
     const j = await r.json();
-    if (!r.ok) return res.status(500).json({ error: "Pinecone", detail: j });
+    if (!r.ok) {
+      return res.status(500).json({ error: "Pinecone", detail: j });
+    }
 
-    const items = (j.matches || []).map(m => ({
+    const items = (j.matches ?? []).map((m) => ({
       id: m.id,
       score: m.score,
-      ...m.metadata // final_title, final_subtitle, final_author, final_publication, final_essay_url, final_image_url, final_type, date_of_publication, etc.
+      ...m.metadata,
     }));
 
     res.json(items);
@@ -117,5 +121,6 @@ app.get("/search", async (req,res) => {
 });
 
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log("search api listening on", PORT));
-);
+app.listen(PORT, () => {
+  console.log("search api listening on", PORT);
+});
