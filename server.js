@@ -48,7 +48,7 @@ app.get("/search", async (req, res) => {
   try {
     const q = String(req.query.q ?? "").trim();
     if (!q) return res.status(400).json({ error: "Missing q" });
-    const topK = Math.min(parseInt(String(req.query.topK ?? "10"), 10) || 10, 50);
+    const topK = Math.min(parseInt(String(req.query.topK ?? "10"), 10) || 10, 100);
 
     // ---- TYPE PARSING ----
     // Accept "essay", "podcast", "video" or CSV like "podcast,video"
