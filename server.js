@@ -11,7 +11,27 @@ const {
   PINECONE_HOST,            // e.g. https://<index>-xxxx.svc.us-east-1-aws.pinecone.io
   PINECONE_NAMESPACE = ""
 } = process.env;
+// --- SECURITY CHECK START ---
+const checkAuth = (req, res, next) => {
+  const secretKey = process.env.BUBBLE_SECRET_KEY; // Must match the Key Name you used in Render
+  const authHeader = req.headers['authorization']; 
 
+  // If the secret key isn't set in Render yet, log a warning but don't crash
+  if (!secretKey) {
+    console.error("WARNING: BUBBLE_SECRET_KEY is missing in Render environment variables!");
+    return res.status(500).json({ error: 'Server configuration error' });
+  }
+
+  // Check if the header matches "Bearer <YOUR_SECRET>"
+  if (!authHeader || authHeader !== `Bearer ${secretKey}`) {
+    return res.status(401).json({ error: 'Unauthorized: Missing or wrong password' });
+  }
+  next(); 
+};
+
+// Apply the lock to ALL routes
+app.use(checkAuth);
+// --- SECURITY CHECK END ---
 const MODEL = "text-embedding-3-small"; // 1536-dim cosine
 const DAY_MS = 24 * 60 * 60 * 1000;
 
