@@ -42,9 +42,7 @@ async function getDenseEmbedding(text) {
 
 // (2) SPARSE EMBEDDING (Keywords)
 async function getSparseEmbedding(text) {
-  // Guard: Never call the API with an empty string
   if (!text || text.trim() === "") return null;
-
   const r = await fetch("https://api.pinecone.io/embed", {
     method: "POST",
     headers: { 
@@ -89,11 +87,8 @@ app.get("/search", async (req, res) => {
     // STEP 1: Generate Dense Vector
     const denseVector = await getDenseEmbedding(q);
 
-    // STEP 2: Conditional Sparse Generation (The Safety Switch)
+    // STEP 2: Conditional Sparse Generation
     let sparseVector = null;
-    // Only attempt sparse embedding if:
-    // 1. Expert Hybrid is enabled globally via ENV
-    // 2. The user has provided an exact phrase to search for
     if (ENABLE_HYBRID === "true" && exactPhrase) {
       sparseVector = await getSparseEmbedding(exactPhrase);
     }
@@ -116,7 +111,8 @@ app.get("/search", async (req, res) => {
           allowedTypeLabels.add("Podcast, Video");
         }
       }
-      if (allowedTypeLabels.size) filter.final_type = { $in: Array.from(allowedTypeLabels) };
+      // FILTER KEY UPDATED: (f) final type to "type"
+      if (allowedTypeLabels.size) filter.type = { $in: Array.from(allowedTypeLabels) };
     }
 
     const daysNum = parseInt(String(req.query.days ?? ""), 10);
@@ -126,12 +122,11 @@ app.get("/search", async (req, res) => {
     }
 
     // STEP 4: Query Pinecone
-    // If sparseVector is null, we send a pure dense query to prevent index errors
     const body = {
       vector: sparseVector ? denseVector.map(v => v * alpha) : denseVector,
       topK,
       includeMetadata: true,
-      ...(sparseVector && { sparse_vector: sparseVector }), // Include ONLY if safe
+      ...(sparseVector && { sparse_vector: sparseVector }),
       ...(PINECONE_NAMESPACE && { namespace: PINECONE_NAMESPACE }),
       ...(Object.keys(filter).length ? { filter } : {})
     };
@@ -144,7 +139,19 @@ app.get("/search", async (req, res) => {
 
     const j = await r.json();
     if (!r.ok) return res.status(500).json({ error: "Pinecone Error", detail: j });
-    const items = (j.matches ?? []).map(m => ({ id: m.id, score: m.score, ...m.metadata }));
+
+    // STEP 5: Final Clean Metadata Mapping
+    const items = (j.matches ?? []).map(m => ({ 
+      id: m.id, 
+      score: m.score, 
+      title: m.metadata.title,       // (e) Renamed from final_title
+      author: m.metadata.author,     // (a) Renamed from final_author
+      abstract: m.metadata.abstract, // (d) Renamed from final_subtitle
+      url: m.metadata.url,           // (b) Renamed from final_essay_url
+      publication: m.metadata.publication, // (c) Renamed from final_publication
+      type: m.metadata.type,         // (f) Renamed from final_type
+      ...m.metadata 
+    }));
     res.json(items);
 
   } catch (e) {
