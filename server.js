@@ -10,7 +10,9 @@ const {
   PINECONE_API_KEY,
   PINECONE_HOST,
   BUBBLE_SECRET_KEY,
-  PINECONE_NAMESPACE = ""
+  PINECONE_NAMESPACE = "",
+  // SAFETY SWITCH: Set this to "true" only after you finish your Airtable upserts
+  ENABLE_HYBRID = "false" 
 } = process.env;
 
 // --- HELPERS ---
@@ -40,6 +42,9 @@ async function getDenseEmbedding(text) {
 
 // (2) SPARSE EMBEDDING (Keywords)
 async function getSparseEmbedding(text) {
+  // Guard: Never call the API with an empty string
+  if (!text || text.trim() === "") return null;
+
   const r = await fetch("https://api.pinecone.io/embed", {
     method: "POST",
     headers: { 
@@ -75,18 +80,23 @@ app.get("/healthz", (_req, res) => res.json({ ok: true }));
 app.get("/search", async (req, res) => {
   try {
     const q = String(req.query.q ?? "").trim();
-    const alpha = parseFloat(req.query.alpha ?? "0.5");
+    const alpha = parseFloat(req.query.alpha ?? "0.8");
     const exactPhrase = String(req.query.exact ?? "").trim();
 
     if (!q) return res.status(400).json({ error: "Missing q" });
     const topK = Math.min(parseInt(String(req.query.topK ?? "10"), 10) || 10, 100);
 
-    // STEP 1: Generate Vectors
+    // STEP 1: Generate Dense Vector
     const denseVector = await getDenseEmbedding(q);
-    const sparseVector = await getSparseEmbedding(exactPhrase || q);
 
-    // STEP 2: Handle Weights
-    const weightedDense = denseVector.map(v => v * alpha);
+    // STEP 2: Conditional Sparse Generation (The Safety Switch)
+    let sparseVector = null;
+    // Only attempt sparse embedding if:
+    // 1. Expert Hybrid is enabled globally via ENV
+    // 2. The user has provided an exact phrase to search for
+    if (ENABLE_HYBRID === "true" && exactPhrase) {
+      sparseVector = await getSparseEmbedding(exactPhrase);
+    }
 
     // STEP 3: Build Metadata Filter
     const filter = {};
@@ -116,11 +126,12 @@ app.get("/search", async (req, res) => {
     }
 
     // STEP 4: Query Pinecone
+    // If sparseVector is null, we send a pure dense query to prevent index errors
     const body = {
-      vector: weightedDense,
-      sparse_vector: sparseVector,
+      vector: sparseVector ? denseVector.map(v => v * alpha) : denseVector,
       topK,
       includeMetadata: true,
+      ...(sparseVector && { sparse_vector: sparseVector }), // Include ONLY if safe
       ...(PINECONE_NAMESPACE && { namespace: PINECONE_NAMESPACE }),
       ...(Object.keys(filter).length ? { filter } : {})
     };
