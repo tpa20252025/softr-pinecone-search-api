@@ -1,5 +1,6 @@
 import express from "express";
 import cors from "cors";
+import fetch from "node-fetch"; // Ensure you have this: npm install node-fetch
 
 const app = express();
 app.use(express.json());
@@ -11,7 +12,6 @@ const {
   PINECONE_HOST,
   BUBBLE_SECRET_KEY,
   PINECONE_NAMESPACE = "",
-  // SAFETY SWITCH: Set this to "true" only after you finish your Airtable upserts
   ENABLE_HYBRID = "false" 
 } = process.env;
 
@@ -28,7 +28,7 @@ function ymdRange(fromYMD, toYMD) {
   return out;
 }
 
-// (1) DENSE EMBEDDING (Meaning)
+// (1) DENSE EMBEDDING
 async function getDenseEmbedding(text) {
   const r = await fetch("https://api.openai.com/v1/embeddings", {
     method: "POST",
@@ -40,7 +40,7 @@ async function getDenseEmbedding(text) {
   return j.data[0].embedding;
 }
 
-// (2) SPARSE EMBEDDING (Keywords)
+// (2) SPARSE EMBEDDING
 async function getSparseEmbedding(text) {
   if (!text || text.trim() === "") return null;
   const r = await fetch("https://api.pinecone.io/embed", {
@@ -84,10 +84,10 @@ app.get("/search", async (req, res) => {
     if (!q) return res.status(400).json({ error: "Missing q" });
     const topK = Math.min(parseInt(String(req.query.topK ?? "10"), 10) || 10, 100);
 
-    // STEP 1: Generate Dense Vector
+    // STEP 1: Dense Vector
     const denseVector = await getDenseEmbedding(q);
 
-    // STEP 2: Conditional Sparse Generation
+    // STEP 2: Sparse Vector
     let sparseVector = null;
     if (ENABLE_HYBRID === "true" && exactPhrase) {
       sparseVector = await getSparseEmbedding(exactPhrase);
@@ -111,14 +111,15 @@ app.get("/search", async (req, res) => {
           allowedTypeLabels.add("Podcast, Video");
         }
       }
-      // FILTER KEY UPDATED: (f) final type to "type"
-      if (allowedTypeLabels.size) filter.type = { $in: Array.from(allowedTypeLabels) };
+      // CORRECTED: Uses 'Type' (Capitalized)
+      if (allowedTypeLabels.size) filter.Type = { $in: Array.from(allowedTypeLabels) };
     }
 
     const daysNum = parseInt(String(req.query.days ?? ""), 10);
     if (Number.isFinite(daysNum) && daysNum > 0) {
       const allowedDates = ymdRange(ymd(Date.now() - daysNum * DAY_MS), ymd(Date.now()));
-      filter.date_of_publication = { $in: allowedDates };
+      // CORRECTED: Uses 'Date of Publication'
+      filter["Date of Publication"] = { $in: allowedDates };
     }
 
     // STEP 4: Query Pinecone
@@ -144,14 +145,25 @@ app.get("/search", async (req, res) => {
     const items = (j.matches ?? []).map(m => ({ 
       id: m.id, 
       score: m.score, 
-      title: m.metadata.title,       // (e) Renamed from final_title
-      author: m.metadata.author,     // (a) Renamed from final_author
-      abstract: m.metadata.abstract, // (d) Renamed from final_subtitle
-      url: m.metadata.url,           // (b) Renamed from final_essay_url
-      publication: m.metadata.publication, // (c) Renamed from final_publication
-      type: m.metadata.type,         // (f) Renamed from final_type
+      
+      // CORRECTED: Maps Capitalized Pinecone Keys -> Lowercase Bubble Keys
+      title:       m.metadata.Title,
+      author:      m.metadata.Author,
+      url:         m.metadata.URL,
+      publication: m.metadata.Publication,
+      type:        m.metadata.Type,
+      date:        m.metadata["Date of Publication"],
+
+      // CORRECTED: Explicitly sends new fields
+      snippet:     m.metadata.Snippet,
+      ai_summary:  m.metadata["AI Summary"],
+
+      // CORRECTED: Fallback logic
+      abstract:    m.metadata["AI Summary"] || m.metadata.Snippet,
+
       ...m.metadata 
     }));
+    
     res.json(items);
 
   } catch (e) {
