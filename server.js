@@ -1,6 +1,6 @@
 import express from "express";
 import cors from "cors";
-import fetch from "node-fetch"; // Ensure you have this: npm install node-fetch
+import fetch from "node-fetch";
 
 const app = express();
 app.use(express.json());
@@ -81,48 +81,59 @@ app.get("/search", async (req, res) => {
     const alpha = parseFloat(req.query.alpha ?? "0.8");
     const exactPhrase = String(req.query.exact ?? "").trim();
 
+    // 1. Validate Input
     if (!q) return res.status(400).json({ error: "Missing q" });
     const topK = Math.min(parseInt(String(req.query.topK ?? "10"), 10) || 10, 100);
 
-    // STEP 1: Dense Vector
+    // 2. Generate Dense Vector
     const denseVector = await getDenseEmbedding(q);
 
-    // STEP 2: Sparse Vector
+    // 3. Generate Sparse Vector (Optional)
     let sparseVector = null;
     if (ENABLE_HYBRID === "true" && exactPhrase) {
       sparseVector = await getSparseEmbedding(exactPhrase);
     }
 
-    // STEP 3: Build Metadata Filter
+    // 4. Build Metadata Filter (Brute Force Method)
     const filter = {};
-    const rawType = String(req.query.type ?? "").trim().toLowerCase();
-    let tokens = rawType.replace(/\//g, ",").split(",").map(s => s.trim()).filter(Boolean);
-    
-    if (tokens.length && !tokens.includes("all")) {
-      const allowedTypeLabels = new Set();
-      for (const t of tokens) {
-        if (t === "essay" || t === "essays") allowedTypeLabels.add("Essay");
-        else if (t === "podcast" || t === "podcasts") {
-          allowedTypeLabels.add("Podcast");
-          allowedTypeLabels.add("Podcast, Video");
-        }
-        else if (t === "video" || t === "videos") {
-          allowedTypeLabels.add("Video");
-          allowedTypeLabels.add("Podcast, Video");
-        }
-      }
-      // CORRECTED: Uses 'Type' (Capitalized)
-      if (allowedTypeLabels.size) filter.Type = { $in: Array.from(allowedTypeLabels) };
+    const bubbleType = String(req.query.type ?? "").trim(); // Kept original casing to match exact strings
+
+    if (bubbleType === "All Content Types") {
+        // (1) Allow anything. No filter added to 'Type'.
+    } 
+    else if (bubbleType === "Essays Only") {
+        // (2) Allow only specific permutations
+        filter.Type = { 
+            $in: [
+                "Essay", 
+                "Essay, Podcast", 
+                "Essay, Video", 
+                "Essay, Podcast, Video", 
+                "Essay, Video, Podcast", 
+                "Podcast, Essay", 
+                "Podcast, Essay, Video", 
+                "Podcast, Video, Essay", 
+                "Video, Essay", 
+                "Video, Essay, Podcast", 
+                "Video, Podcast, Essay"
+            ] 
+        };
+    } 
+    else if (bubbleType === "Podcasts/Videos Only") {
+        // (3) Allow all except those that are "Essays"
+        // Using $nin (Not In) to capture "Essay" and "Essays" just to be safe, 
+        // effectively executing the "Except" logic.
+        filter.Type = { $nin: ["Essay", "Essays"] };
     }
 
+    // handle Date filtering (independent of Type)
     const daysNum = parseInt(String(req.query.days ?? ""), 10);
     if (Number.isFinite(daysNum) && daysNum > 0) {
       const allowedDates = ymdRange(ymd(Date.now() - daysNum * DAY_MS), ymd(Date.now()));
-      // CORRECTED: Uses 'Date of Publication'
       filter["Date of Publication"] = { $in: allowedDates };
     }
 
-    // STEP 4: Query Pinecone
+    // 5. Query Pinecone
     const body = {
       vector: sparseVector ? denseVector.map(v => v * alpha) : denseVector,
       topK,
@@ -141,24 +152,19 @@ app.get("/search", async (req, res) => {
     const j = await r.json();
     if (!r.ok) return res.status(500).json({ error: "Pinecone Error", detail: j });
 
-    // STEP 5: Final Clean Metadata Mapping
+    // 6. Map Response
     const items = (j.matches ?? []).map(m => ({ 
       id: m.id, 
       score: m.score, 
       
-      // CORRECTED: Maps Capitalized Pinecone Keys -> Lowercase Bubble Keys
       title:       m.metadata.Title,
       author:      m.metadata.Author,
       url:         m.metadata.URL,
       publication: m.metadata.Publication,
       type:        m.metadata.Type,
       date:        m.metadata["Date of Publication"],
-
-      // CORRECTED: Explicitly sends new fields
       snippet:     m.metadata.Snippet,
       ai_summary:  m.metadata["AI Summary"],
-
-      // CORRECTED: Fallback logic
       abstract:    m.metadata["AI Summary"] || m.metadata.Snippet,
 
       ...m.metadata 
