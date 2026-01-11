@@ -77,12 +77,6 @@ app.get("/healthz", (_req, res) => res.json({ ok: true }));
 // --- MAIN SEARCH ROUTE ---
 app.get("/search", async (req, res) => {
   try {
-    console.log("=== INCOMING REQUEST DEBUG ===");
-    console.log("Full URL:", req.url);
-    console.log("All query params:", JSON.stringify(req.query, null, 2));
-    console.log("type param raw:", req.query.type);
-    console.log("==============================");
-
     const q = String(req.query.q ?? "").trim();
     const alpha = parseFloat(req.query.alpha ?? "0.8");
     const exactPhrase = String(req.query.exact ?? "").trim();
@@ -100,22 +94,15 @@ app.get("/search", async (req, res) => {
       sparseVector = await getSparseEmbedding(exactPhrase);
     }
 
-    // 4. Build Metadata Filter
+    // 4. Build Metadata Filter (Brute Force Method)
     const filter = {};
-    const bubbleType = String(req.query.type ?? "").trim();
-    
-    console.log("=== FILTER LOGIC DEBUG ===");
-    console.log("bubbleType after trim:", bubbleType);
-    console.log("bubbleType length:", bubbleType.length);
-    console.log("bubbleType === 'All Content Types'?", bubbleType === "All Content Types");
-    console.log("bubbleType === 'Essays Only'?", bubbleType === "Essays Only");
-    console.log("bubbleType === 'Podcasts/Videos Only'?", bubbleType === "Podcasts/Videos Only");
+    const bubbleType = String(req.query.type ?? "").trim(); // Kept original casing to match exact strings
 
     if (bubbleType === "All Content Types") {
-        console.log("Matched: All Content Types");
+        // (1) Allow anything. No filter added to 'Type'.
     } 
     else if (bubbleType === "Essays Only") {
-        console.log("Matched: Essays Only");
+        // (2) Allow only specific permutations
         filter.Type = { 
             $in: [
                 "Essay", 
@@ -133,10 +120,10 @@ app.get("/search", async (req, res) => {
         };
     } 
     else if (bubbleType === "Podcasts/Videos Only") {
-        console.log("Matched: Podcasts/Videos Only");
+        // (3) Allow all except those that are "Essays"
+        // Using $nin (Not In) to capture "Essay" and "Essays" just to be safe, 
+        // effectively executing the "Except" logic.
         filter.Type = { $nin: ["Essay", "Essays"] };
-    } else {
-        console.log("NO MATCH - bubbleType didn't match any condition");
     }
 
     // handle Date filtering (independent of Type)
@@ -145,11 +132,6 @@ app.get("/search", async (req, res) => {
       const allowedDates = ymdRange(ymd(Date.now() - daysNum * DAY_MS), ymd(Date.now()));
       filter["Date of Publication"] = { $in: allowedDates };
     }
-
-    console.log("=== FINAL FILTER ===");
-    console.log("Filter object:", JSON.stringify(filter, null, 2));
-    console.log("Filter has keys?", Object.keys(filter).length > 0);
-    console.log("====================");
 
     // 5. Query Pinecone
     const body = {
@@ -160,10 +142,6 @@ app.get("/search", async (req, res) => {
       ...(PINECONE_NAMESPACE && { namespace: PINECONE_NAMESPACE }),
       ...(Object.keys(filter).length ? { filter } : {})
     };
-
-    console.log("=== PINECONE REQUEST ===");
-    console.log("Sending filter to Pinecone:", body.filter ? JSON.stringify(body.filter, null, 2) : "NO FILTER");
-    console.log("========================");
 
     const r = await fetch(`${trimHost(PINECONE_HOST)}/query`, {
       method: "POST",
@@ -192,18 +170,9 @@ app.get("/search", async (req, res) => {
       ...m.metadata 
     }));
     
-    console.log("=== RESULTS DEBUG ===");
-    console.log("Number of results:", items.length);
-    if (items.length > 0) {
-      console.log("First result Type:", items[0].type);
-      console.log("All unique Types in results:", [...new Set(items.map(i => i.type))]);
-    }
-    console.log("=====================");
-    
     res.json(items);
 
   } catch (e) {
-    console.error("=== ERROR ===", e);
     res.status(500).json({ error: String(e) });
   }
 });
