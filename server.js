@@ -18,13 +18,28 @@ const {
 // --- HELPERS ---
 const trimHost = (u = "") => u.replace(/\/+$/, "");
 const DAY_MS = 24 * 60 * 60 * 1000;
+
+// Keeps the basic ISO string for the range calculation inputs
 const ymd = (d) => new Date(d).toISOString().slice(0, 10);
 
+// UPDATED: Generates multiple formats for every day in the range
 function ymdRange(fromYMD, toYMD) {
   const out = [];
   let t = new Date(fromYMD + "T00:00:00Z").getTime();
   const end = new Date(toYMD + "T00:00:00Z").getTime();
-  for (; t <= end; t += DAY_MS) out.push(ymd(t));
+  
+  for (; t <= end; t += DAY_MS) {
+    // Extract date parts from UTC ISO string
+    const iso = new Date(t).toISOString(); // e.g. "2023-10-25T00:00:00.000Z"
+    const yyyy = iso.slice(0, 4);
+    const mm = iso.slice(5, 7);
+    const dd = iso.slice(8, 10);
+
+    // Push all potential formats to the filter list
+    out.push(`${yyyy}-${mm}-${dd}`); // Original ISO (e.g. 2023-10-25)
+    out.push(`${yyyy}/${mm}/${dd}`); // Prompt Format 1 (e.g. 2023/10/25)
+    out.push(`${mm}/${dd}/${yyyy}`); // Prompt Format 2 (e.g. 10/25/2023)
+  }
   return out;
 }
 
@@ -96,7 +111,7 @@ app.get("/search", async (req, res) => {
 
     // 4. Build Metadata Filter (Brute Force Method)
     const filter = {};
-    const bubbleType = String(req.query.type ?? "").trim(); // Kept original casing to match exact strings
+    const bubbleType = String(req.query.type ?? "").trim(); 
 
     if (bubbleType === "All Content Types") {
         // (1) Allow anything. No filter added to 'Type'.
@@ -121,14 +136,13 @@ app.get("/search", async (req, res) => {
     } 
     else if (bubbleType === "Podcasts/Videos Only") {
         // (3) Allow all except those that are "Essays"
-        // Using $nin (Not In) to capture "Essay" and "Essays" just to be safe, 
-        // effectively executing the "Except" logic.
         filter.Type = { $nin: ["Essay", "Essays"] };
     }
 
     // handle Date filtering (independent of Type)
     const daysNum = parseInt(String(req.query.days ?? ""), 10);
     if (Number.isFinite(daysNum) && daysNum > 0) {
+      // ymdRange now returns matching strings for YYYY-MM-DD, YYYY/MM/DD, and MM/DD/YYYY
       const allowedDates = ymdRange(ymd(Date.now() - daysNum * DAY_MS), ymd(Date.now()));
       filter["Date of Publication"] = { $in: allowedDates };
     }
