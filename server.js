@@ -18,13 +18,34 @@ const {
 // --- HELPERS ---
 const trimHost = (u = "") => u.replace(/\/+$/, "");
 const DAY_MS = 24 * 60 * 60 * 1000;
-const ymd = (d) => new Date(d).toISOString().slice(0, 10);
 
-function ymdRange(fromYMD, toYMD) {
+// Helper to format a date object into both "YYYY-MM-DD" and "MM/DD/YYYY"
+const getDualFormats = (dateObj) => {
+  const y = dateObj.getUTCFullYear();
+  const m = String(dateObj.getUTCMonth() + 1).padStart(2, '0');
+  const d = String(dateObj.getUTCDate()).padStart(2, '0');
+  
+  return [
+    `${y}-${m}-${d}`, // Format 1: YYYY-MM-DD
+    `${m}/${d}/${y}`  // Format 2: MM/DD/YYYY
+  ];
+};
+
+function getDualDateRange(daysBack) {
   const out = [];
-  let t = new Date(fromYMD + "T00:00:00Z").getTime();
-  const end = new Date(toYMD + "T00:00:00Z").getTime();
-  for (; t <= end; t += DAY_MS) out.push(ymd(t));
+  const now = new Date();
+  // Normalize to start of today in UTC to avoid timezone drift
+  const endTimestamp = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate());
+  // Calculate start timestamp
+  let currentTimestamp = endTimestamp - (daysBack * DAY_MS);
+
+  // Iterate from start date up to today
+  while (currentTimestamp <= endTimestamp) {
+    const d = new Date(currentTimestamp);
+    // Push BOTH formats for this single day
+    out.push(...getDualFormats(d));
+    currentTimestamp += DAY_MS;
+  }
   return out;
 }
 
@@ -96,7 +117,7 @@ app.get("/search", async (req, res) => {
 
     // 4. Build Metadata Filter (Brute Force Method)
     const filter = {};
-    const bubbleType = String(req.query.type ?? "").trim(); // Kept original casing to match exact strings
+    const bubbleType = String(req.query.type ?? "").trim(); 
 
     if (bubbleType === "All Content Types") {
         // (1) Allow anything. No filter added to 'Type'.
@@ -121,15 +142,14 @@ app.get("/search", async (req, res) => {
     } 
     else if (bubbleType === "Podcasts/Videos Only") {
         // (3) Allow all except those that are "Essays"
-        // Using $nin (Not In) to capture "Essay" and "Essays" just to be safe, 
-        // effectively executing the "Except" logic.
         filter.Type = { $nin: ["Essay", "Essays"] };
     }
 
-    // handle Date filtering (independent of Type)
+    // handle Date filtering (DUAL FORMAT SUPPORT)
     const daysNum = parseInt(String(req.query.days ?? ""), 10);
     if (Number.isFinite(daysNum) && daysNum > 0) {
-      const allowedDates = ymdRange(ymd(Date.now() - daysNum * DAY_MS), ymd(Date.now()));
+      // This helper now generates BOTH formats for the entire range
+      const allowedDates = getDualDateRange(daysNum);
       filter["Date of Publication"] = { $in: allowedDates };
     }
 
