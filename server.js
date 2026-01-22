@@ -19,34 +19,41 @@ const {
 const trimHost = (u = "") => u.replace(/\/+$/, "");
 const DAY_MS = 24 * 60 * 60 * 1000;
 
-// Helper to format a date object into both "YYYY-MM-DD" and "MM/DD/YYYY"
-const getDualFormats = (dateObj) => {
+// REPLACED: Helper to generate 4 variations of the date to catch "5/1/2024" AND "05/01/2024"
+const getMultiFormats = (dateObj) => {
   const y = dateObj.getUTCFullYear();
-  const m = String(dateObj.getUTCMonth() + 1).padStart(2, '0');
-  const d = String(dateObj.getUTCDate()).padStart(2, '0');
+  const m = dateObj.getUTCMonth() + 1; // Raw number (1-12)
+  const d = dateObj.getUTCDate();      // Raw number (1-31)
+  
+  const mm = String(m).padStart(2, '0'); // Padded (01-12)
+  const dd = String(d).padStart(2, '0'); // Padded (01-31)
   
   return [
-    `${y}-${m}-${d}`, // Format 1: YYYY-MM-DD
-    `${m}/${d}/${y}`  // Format 2: MM/DD/YYYY
+    `${y}-${mm}-${dd}`, // ISO Strict: 2024-05-01
+    `${mm}/${dd}/${y}`, // US Padded:  05/01/2024
+    `${m}/${d}/${y}`,   // US Loose:   5/1/2024  <-- This is likely the missing one
+    `${m}/${dd}/${y}`,  // Mixed 1:    5/01/2024 (Just in case)
+    `${mm}/${d}/${y}`   // Mixed 2:    05/1/2024 (Just in case)
   ];
 };
 
-function getDualDateRange(daysBack) {
-  const out = [];
+function getMultiDateRange(daysBack) {
+  const out = new Set(); // Use Set to avoid duplicate strings
   const now = new Date();
-  // Normalize to start of today in UTC to avoid timezone drift
+  
+  // Normalize to start of today in UTC
   const endTimestamp = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate());
-  // Calculate start timestamp
   let currentTimestamp = endTimestamp - (daysBack * DAY_MS);
 
-  // Iterate from start date up to today
   while (currentTimestamp <= endTimestamp) {
     const d = new Date(currentTimestamp);
-    // Push BOTH formats for this single day
-    out.push(...getDualFormats(d));
+    // Get all 5 variations for this single day
+    const variations = getMultiFormats(d);
+    variations.forEach(v => out.add(v));
+    
     currentTimestamp += DAY_MS;
   }
-  return out;
+  return Array.from(out);
 }
 
 // (1) DENSE EMBEDDING
@@ -115,41 +122,33 @@ app.get("/search", async (req, res) => {
       sparseVector = await getSparseEmbedding(exactPhrase);
     }
 
-    // 4. Build Metadata Filter (Brute Force Method)
+    // 4. Build Metadata Filter
     const filter = {};
     const bubbleType = String(req.query.type ?? "").trim(); 
 
     if (bubbleType === "All Content Types") {
-        // (1) Allow anything. No filter added to 'Type'.
+        // (1) Allow anything.
     } 
     else if (bubbleType === "Essays Only") {
-        // (2) Allow only specific permutations
         filter.Type = { 
             $in: [
-                "Essay", 
-                "Essay, Podcast", 
-                "Essay, Video", 
-                "Essay, Podcast, Video", 
-                "Essay, Video, Podcast", 
-                "Podcast, Essay", 
-                "Podcast, Essay, Video", 
-                "Podcast, Video, Essay", 
-                "Video, Essay", 
-                "Video, Essay, Podcast", 
-                "Video, Podcast, Essay"
+                "Essay", "Essay, Podcast", "Essay, Video", 
+                "Essay, Podcast, Video", "Essay, Video, Podcast", 
+                "Podcast, Essay", "Podcast, Essay, Video", 
+                "Podcast, Video, Essay", "Video, Essay", 
+                "Video, Essay, Podcast", "Video, Podcast, Essay"
             ] 
         };
     } 
     else if (bubbleType === "Podcasts/Videos Only") {
-        // (3) Allow all except those that are "Essays"
         filter.Type = { $nin: ["Essay", "Essays"] };
     }
 
-    // handle Date filtering (DUAL FORMAT SUPPORT)
+    // handle Date filtering (UPDATED: MULTI-FORMAT SUPPORT)
     const daysNum = parseInt(String(req.query.days ?? ""), 10);
     if (Number.isFinite(daysNum) && daysNum > 0) {
-      // This helper now generates BOTH formats for the entire range
-      const allowedDates = getDualDateRange(daysNum);
+      // Use the new helper that catches 5/1/2024 and 05/01/2024
+      const allowedDates = getMultiDateRange(daysNum);
       filter["Date of Publication"] = { $in: allowedDates };
     }
 
